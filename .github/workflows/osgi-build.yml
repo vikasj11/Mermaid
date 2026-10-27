@@ -1,0 +1,147 @@
+name: OSGi Maven build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: Build all products or only changed products and their dependents
+        type: choice
+        options:
+          - full
+          - changed
+        default: full
+      base_ref:
+        description: Git ref (branch, tag or SHA, e.g. HEAD~3) to compare against in changed mode
+        type: string
+        default: master
+
+permissions:
+  contents: read
+
+jobs:
+  test-resolver:
+    name: Test resolver
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Test dependency planner and dashboard renderer
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+  plan:
+    name: Plan build
+    needs: test-resolver
+    runs-on: ubuntu-latest
+    outputs:
+      build_required: ${{ steps.plan.outputs.build_required }}
+      build_mode: ${{ steps.plan.outputs.build_mode }}
+      maven_projects: ${{ steps.plan.outputs.maven_projects }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select build scenario
+        id: scenario
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BUILD_MODE: ${{ inputs.build_mode }}
+          BASE_REF: ${{ inputs.base_ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "mode=${BUILD_MODE:-full}" >> "$GITHUB_OUTPUT"
+            echo "base=${BASE_REF:-master}" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "mode=changed" >> "$GITHUB_OUTPUT"
+            echo "base=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=changed" >> "$GITHUB_OUTPUT"
+            echo "base=$PUSH_BEFORE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve Maven and OSGi dependency graphs
+        id: plan
+        env:
+          BUILD_MODE: ${{ steps.scenario.outputs.mode }}
+          BASE_REF: ${{ steps.scenario.outputs.base }}
+        run: |
+          python3 scripts/build_pipeline.py \
+            --mode "$BUILD_MODE" \
+            --base "$BASE_REF"
+
+      - name: Render dependency report
+        run: |
+          python3 scripts/render_summary.py \
+            --html build-reports/dependency-report.html \
+            --mermaid-dir build-reports
+
+      - name: Upload dependency report
+        id: report
+        uses: actions/upload-artifact@v4
+        with:
+          name: northwind-oms-dependency-graphs
+          path: |
+            build-reports/dependency-report.html
+            build-reports/dependency-graph.json
+            build-reports/dependency-graph-full.mmd
+            build-reports/dependency-graph-changed.mmd
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish dependency graph to the run summary
+        env:
+          ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
+        run: |
+          python3 scripts/render_summary.py \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --artifact-url "$ARTIFACT_URL"
+
+  build:
+    name: Build (single runner)
+    needs: plan
+    if: needs.plan.outputs.build_required == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: pom.xml
+
+      - name: Build selected reactor projects
+        if: needs.plan.outputs.build_mode == 'changed'
+        env:
+          MAVEN_PROJECTS: ${{ needs.plan.outputs.maven_projects }}
+        run: |
+          mvn --batch-mode --no-transfer-progress \
+            --file pom.xml \
+            --projects "$MAVEN_PROJECTS" \
+            --also-make \
+            verify
+
+      - name: Build all reactor projects
+        if: needs.plan.outputs.build_mode == 'full'
+        run: |
+          mvn --batch-mode --no-transfer-progress \
+            --file pom.xml \
+            verify
+
+      - name: Upload bundle and feature JARs
+        uses: actions/upload-artifact@v4
+        with:
+          name: northwind-oms-jars
+          path: '**/target/*.jar'
+          if-no-files-found: error
+          retention-days: 30
