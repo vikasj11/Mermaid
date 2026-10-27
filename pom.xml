@@ -8,27 +8,30 @@
     <artifactId>oms.platform.parent</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>pom</packaging>
+
     <name>Northwind Order Management System - Parent</name>
 
     <properties>
-        <maven.compiler.release>17</maven.compiler.release>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <tycho-version>2.7.5</tycho-version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
-    <!-- Each listed directory must exist and contain its own pom.xml. -->
     <modules>
+        <module>thirdparty</module>
         <module>catalog</module>
         <module>customer</module>
         <module>security</module>
         <module>payment</module>
+        <module>orders</module>
         <module>shipping</module>
         <module>notification</module>
-        <module>orders</module>
         <module>reporting</module>
-        <module>thirdparty</module>
     </modules>
 
+    <!-- Product-level target platform: the pool of external bundles every
+         module resolves its Import-Package requirements against. -->
     <repositories>
         <repository>
             <id>eclipse-2023-12</id>
@@ -45,6 +48,7 @@
                 <version>${tycho-version}</version>
                 <extensions>true</extensions>
             </plugin>
+
             <plugin>
                 <groupId>org.eclipse.tycho</groupId>
                 <artifactId>target-platform-configuration</artifactId>
@@ -73,4 +77,5 @@
             </plugin>
         </plugins>
     </build>
+
 </project>
